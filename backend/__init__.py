@@ -1,0 +1,1 @@
+"""Backend package exposing the Flask application and data processing helpers."""

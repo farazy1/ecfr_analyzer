@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>eCFR Agency Metrics</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; }
+      h1 { margin-bottom: 1rem; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f2f2f2; }
+      tr:nth-child(even) { background-color: #f9f9f9; }
+    </style>
+  </head>
+  <body>
+    <h1>eCFR Agency Metrics</h1>
+    <p>The data on this page is computed from the official eCFR API.  Titles,
+      chapters and parts are downloaded from endpoints described in the SDK
+      documentation【360949012315245†L126-L133】 and aggregated into a set of
+      simple metrics.  Each row corresponds to a chapter (treated as an
+      agency) with its total word count, checksum, number of versions and a
+      custom ratio measuring how often the word “shall” appears relative to the
+      total word count.</p>
+    <div id="app"></div>
+    <!-- React and ReactDOM loaded from CDN for simplicity -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script>
+      const { useState, useEffect } = React;
+      function MetricsTable() {
+        const [data, setData] = useState([]);
+        const [loading, setLoading] = useState(true);
+        useEffect(() => {
+          // Always call the API on the Flask backend explicitly via http.  Using
+          // an absolute URL here allows this page to be served from any
+          // origin (e.g. localhost:8080) and still fetch the data from the
+          // backend on port 5000.  CORS is enabled in the Flask app to permit
+          // cross‑origin requests.
+          fetch('http://localhost:5000/api/summary')
+            .then(r => r.json())
+            .then(d => { setData(d); setLoading(false); })
+            .catch(() => setLoading(false));
+        }, []);
+        if (loading) return React.createElement('p', null, 'Loading...');
+        return React.createElement(
+          'table',
+          null,
+          [
+            React.createElement(
+              'thead',
+              { key: 'head' },
+              React.createElement(
+                'tr',
+                null,
+                ['Agency', 'Title', 'Chapter', 'Word Count', 'Checksum', 'Versions', 'Shall Ratio'].map((h) =>
+                  React.createElement('th', { key: h }, h)
+                )
+              )
+            ),
+            React.createElement(
+              'tbody',
+              { key: 'body' },
+              data.map((item, idx) =>
+                React.createElement(
+                  'tr',
+                  { key: idx },
+                  [
+                    React.createElement('td', null, item.agency),
+                    React.createElement('td', null, item.title_number + ' - ' + item.title_name),
+                    React.createElement('td', null, item.chapter_identifier),
+                    React.createElement('td', null, item.word_count.toLocaleString()),
+                    React.createElement('td', null, item.checksum),
+                    React.createElement('td', null, item.version_count),
+                    React.createElement('td', null, item.shall_ratio)
+                  ]
+                )
+              )
+            )
+          ]
+        );
+      }
+      ReactDOM.createRoot(document.getElementById('app')).render(React.createElement(MetricsTable));
+    </script>
+  </body>
+</html>
