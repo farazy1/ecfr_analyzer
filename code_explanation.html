@@ -1,0 +1,155 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Explanation of the eCFR Analyzer Code</title>
+<style>
+  body { font-family: sans-serif; margin: 2em; line-height: 1.6; }
+  h1, h2, h3 { color: #2c3e50; }
+  code { background: #f8f8f8; padding: 2px 4px; border-radius: 4px; font-family: monospace; }
+</style>
+</head>
+<body>
+<h1>Understanding the eCFR Analyzer</h1>
+<p>This page explains the purpose and function of each part of the eCFR Analyzer code. The project consists of a Python backend using <strong>Flask</strong> and a simple HTML front‑end powered by <strong>React</strong>. It downloads and processes federal regulations from the eCFR API—an API exposed by the eCFR website that allows clients to retrieve titles, chapters, parts and full text of regulations【360949012315245†L126-L133】. The front‑end displays aggregated statistics such as word counts and checksums.</p>
+
+<h2>Background Concepts</h2>
+<p><strong>Content Delivery Networks (CDNs)</strong> are networks of proxy servers distributed across many geographic locations. They improve reliability and speed by caching content closer to users. Wikipedia describes a CDN as “a geographically distributed network of proxy servers and their data centers” whose goal is to provide high availability and performance【468032774274077†L175-L179】.</p>
+<p><strong>unpkg CDN</strong> is a specific CDN that serves files published on npm. It allows you to load JavaScript libraries directly from npm packages via a URL. For example, the unpkg home page notes that it is “a fast, global content delivery network for everything on npm”【772025400715672†L2-L7】. The front‑end uses this service to load React and ReactDOM without a build step.</p>
+
+<h2>Libraries and Technologies Used</h2>
+<p>This project uses a combination of Python and JavaScript libraries to provide server‑side functionality and a responsive web interface:</p>
+<ul>
+  <li><strong>Flask</strong> – a lightweight Python web framework that routes HTTP requests to Python functions. It powers the <code>/api/update</code> and <code>/api/summary</code> endpoints.</li>
+  <li><strong>flask_cors</strong> – a Flask extension that adds Cross‑Origin Resource Sharing (CORS) headers. Without it, the browser would block AJAX requests from the front‑end (served on one port) to the backend (on another port).</li>
+  <li><strong>requests</strong> – a popular Python HTTP client library used to call the eCFR API and download XML and JSON data.</li>
+  <li><strong>React</strong> – a JavaScript library for building user interfaces. The front‑end defines a small React component using modern hooks (<code>useState</code>, <code>useEffect</code>) to fetch data and render a table.</li>
+  <li><strong>unpkg CDN</strong> – a content delivery network that serves React and ReactDOM straight from npm. The HTML file includes script tags that point at unpkg so no bundler or build step is required.</li>
+  <li><strong>Python standard libraries</strong> – modules like <code>json</code> (for parsing JSON), <code>hashlib</code> (for computing MD5 checksums) and <code>signal</code> / <code>atexit</code> (for handling termination and logging) are used extensively in the backend.</li>
+</ul>
+
+<h2>Backend: <code>ecfr_analyzer/backend/ecfr.py</code></h2>
+<p>This module encapsulates all logic for communicating with the eCFR API and computing metrics. It begins with imports:</p>
+<ul>
+<li><code>hashlib</code> — provides the <code>md5</code> function for computing checksums.</li>
+<li><code>json</code> and <code>re</code> — used to handle JSON and regular expressions for cleaning text.</li>
+<li><code>defaultdict</code> from <code>collections</code> — a convenient dictionary subclass (not used in this version, but available).</li>
+<li><code>typing</code> — used for type annotations like <code>Optional</code> and <code>List</code>.</li>
+<li><code>requests</code> — a third‑party library that simplifies making HTTP requests.</li>
+</ul>
+<p>The constant <code>BASE</code> defines the root path for all API calls, pointing to the eCFR <code>versioner</code> service. According to the SDK documentation, this service exposes endpoints like <code>/titles.json</code>, <code>/structure/{date}/title-{title}.json</code>, and <code>/full/{date}/title-{title}.xml</code>【360949012315245†L126-L133】.</p>
+
+<h3>Helper functions</h3>
+<ul>
+<li><code>_fetch_json(path)</code> — concatenates the path to the <code>BASE</code> URL, performs an HTTP GET request, and parses the JSON response. If the request fails, it returns <code>None</code>. Encapsulating network calls in a helper allows for easy error handling.</li>
+<li><code>_fetch_text(path)</code> — similar to <code>_fetch_json</code>, but returns the raw text of the response. It is used to fetch XML documents for parts.</li>
+<li><code>_collect_parts(node, parts)</code> — recursively walks through a structural tree returned from the <code>/structure</code> endpoint. It looks for nodes where <code>type == "part"</code> and extracts the numeric part identifier. This is necessary because the hierarchy can contain subtitles, chapters and subchapters.</li>
+<li><code>_extract_text(xml)</code> — a very simple XML “parser” implemented with regular expressions: it strips out all tags by replacing anything between <code>&lt; ... &gt;</code> with spaces and collapses whitespace. Although not as robust as a real XML parser, it is sufficient for counting words.</li>
+</ul>
+
+<h3><code>build_dataset</code> function</h3>
+<p>This is the core routine. It accepts three optional parameters:</p>
+<ul>
+<li><code>selected_titles</code> — allows the caller to process only certain titles; when <code>None</code>, all titles are processed.</li>
+<li><code>log_progress</code> and <code>log_error</code> — callbacks used by the Flask app to write progress and error information to log files.</li>
+</ul>
+<p>The function performs the following steps:</p>
+<ol>
+<li>It requests the list of titles by calling <code>/api/versioner/v1/titles.json</code>. The returned JSON contains metadata like the title number, name, and the date each title is “up to date as of”【590897020559311†L0-L20】. That date is used to query the structure and full text of the title.</li>
+<li>It loops over each title. Reserved titles are skipped. If <code>selected_titles</code> is provided, only those numbers are processed. For each title it logs a progress message if <code>log_progress</code> is supplied.</li>
+<li>It fetches the list of versions (different historical snapshots) for the title using <code>/versions/title-{num}.json</code>. The length of the <code>versions</code> array becomes the <em>version count</em> metric.</li>
+<li>It fetches the hierarchical structure for the title at the relevant date via <code>/structure/{date}/title-{num}.json</code>. The top level of this structure contains children; the code iterates through those where <code>type == "chapter"</code>. A chapter’s <code>heading</code> is treated as the agency name.</li>
+<li>For each chapter, it calls <code>_collect_parts</code> to gather all part numbers belonging to that chapter. It logs how many parts were found.</li>
+<li>It loops over each part number, fetching the full text with <code>/full/{date}/title-{num}.xml?part={part}</code>. If a request fails, the error callback logs contextual information. Otherwise the XML is stripped of tags and the number of words is counted.</li>
+<li>The text of every part in the chapter is concatenated. The code uses <code>hashlib.md5</code> to compute a checksum of the concatenated text. It also counts how many times the word “shall” appears (case‑insensitive) and divides that by the total word count to produce a custom metric called <em>shall ratio</em>.</li>
+<li>A dictionary is appended to the <code>dataset</code> list containing the title number, title name, chapter identifier, agency name, word count, checksum, version count and shall ratio.</li>
+</ol>
+<p>The result of <code>build_dataset</code> is a list of these dictionaries, one per chapter.</p>
+
+<h3>Saving and loading</h3>
+<p>The module also defines <code>save_dataset(data, path)</code> and <code>load_dataset(path)</code>. These simply write and read the computed dataset to and from a JSON file on disk. Persisting the dataset avoids re‑downloading the entire CFR each time the server starts.</p>
+
+<h2>Backend: <code>ecfr_analyzer/backend/app.py</code></h2>
+<p>This file defines the web API using Flask. In addition to wiring up routes, it now contains logic to handle incremental progress and graceful termination:</p>
+<ul>
+  <li>It imports <code>Flask</code> to create the app and <code>flask_cors.CORS</code> to allow the front‑end to make cross‑origin requests.</li>
+  <li>It defines several module‑level variables: a cache for the computed dataset, the path to <code>data.json</code>, and the paths to two log files (<code>process.log</code> and <code>error.log</code>) that live in the project root. It also introduces a boolean flag <code>_update_in_progress</code> which indicates whether a data download is currently underway.</li>
+  <li>Signal handlers for <code>SIGINT</code> (Ctrl‑C) and <code>SIGTERM</code> are registered. When the process receives one of these signals, the handler writes a line to <code>error.log</code>; if <code>_update_in_progress</code> is true, it notes that the termination occurred while an update was running. After logging, it exits the process. There is also an <code>atexit</code> hook: this runs when the interpreter is shutting down for any reason and writes a similar message to <code>error.log</code> if an update was in progress. This combination ensures that if you kill the server while it’s downloading data, you can see a message like “Process terminated by signal 2 during update” in <code>error.log</code>. Without this mechanism the process would just vanish and leave the log empty.</li>
+  <li>The <code>/api/update</code> route accepts both GET and POST requests. It can optionally take a <code>?title=##</code> query parameter to limit the update to a single title; otherwise it processes all titles. At the start of an update, it clears the two log files and sets <code>_update_in_progress</code> to <code>True</code>. It loads any existing <code>data.json</code> to determine which titles have already been processed. It then loops through the list of titles; for each title that isn’t already present (or matches the query parameter) it calls <code>build_dataset</code> with a single‑title filter. After each title completes, it merges the new entries into the dataset, writes the entire dataset back to disk, and moves on. The <code>try/except/finally</code> in this route catches unexpected exceptions and logs them via the error callback, then clears <code>_update_in_progress</code> in a <code>finally</code> block so that the termination hooks know whether an update was running.</li>
+  <li>The <code>/api/summary</code> route returns the cached dataset. On first use it loads the dataset from disk if available. If a <code>title</code> parameter is passed, the returned list is filtered to entries whose <code>title_number</code> matches that parameter.</li>
+  <li>At the bottom of the file, a standard Flask <code>if __name__ == '__main__'</code> block starts the development server on port 5000.</li>
+</ul>
+<p>Thanks to CORS, a web page served from another port (the front‑end) can make AJAX requests to these endpoints.</p>
+
+<h2>Front‑end: <code>ecfr_analyzer/frontend/index.html</code></h2>
+<p>This HTML file builds a simple user interface without a build system. Some key parts:</p>
+<ul>
+<li>The inline <code>&lt;style&gt;</code> block sets basic typography and table styling.</li>
+<li>A paragraph explains that the data is computed from the eCFR API and cites the SDK documentation【360949012315245†L126-L133】.</li>
+<li>The comments and script tags import React and ReactDOM from the unpkg CDN. As noted earlier, unpkg is a CDN that serves npm packages directly【772025400715672†L2-L7】. The script tags specify version 18 of React. These lines show the CDN in use in the front‑end source【520303780565026†L23-L26】.</li>
+<li>The inline JavaScript defines a React component called <code>MetricsTable</code>. It uses React’s <code>useState</code> and <code>useEffect</code> hooks to fetch data from <code>/api/summary</code> when the component mounts. While the data is loading, it renders a “Loading…” message. Once the fetch resolves, it renders a table whose headers are fixed and whose rows are created by mapping over the JSON returned from the API.</li>
+<li>Finally, <code>ReactDOM.createRoot(...).render(...)</code> attaches the component to the <code>&lt;div id="app"&gt;</code> element.</li>
+</ul>
+<p>Because the front‑end fetches data from the Flask API, you need to run the Flask server at <code>localhost:5000</code> before loading this HTML file in your browser.</p>
+
+<h2>How to Build and Run the Application</h2>
+<p>To use the eCFR analyzer locally you need to run both the Flask backend and the static front‑end. Here’s a step‑by‑step guide:</p>
+<ol>
+  <li><strong>Install dependencies.</strong> Ensure Python 3.8 or newer is installed. From a terminal change into the <code>ecfr_analyzer/backend</code> directory and install the required packages:
+    <pre><code>pip install flask flask_cors requests</code></pre>
+  </li>
+  <li><strong>Start the backend server.</strong> Still in the <code>backend</code> directory, run:
+    <pre><code>python -m ecfr_analyzer.backend.app</code></pre>
+    This command runs the <code>app</code> module in package notation, which ensures Python finds the package correctly.  The Flask server starts on port 5000 and loads any existing <code>data.json</code> but does not download new data until you call one of its API endpoints.</li>
+  <li><strong>Trigger a download.</strong> To fetch all titles and build the dataset, send a request to <code>/api/update</code>. You can do this in a browser or with <code>curl</code>:
+    <pre><code># fetch everything
+curl -X POST http://localhost:5000/api/update
+
+# fetch only a single title (e.g., Title 10)
+curl -X POST "http://localhost:5000/api/update?title=10"</code></pre>
+    Each call writes progress messages to <code>process.log</code>, errors to <code>error.log</code> and saves partial results to <code>data.json</code> after every title. If you interrupt the process, restarting it will resume where it left off.</li>
+  <li><strong>Retrieve metrics.</strong> Once some data has been downloaded, you can fetch the cached results via <code>/api/summary</code>:
+    <pre><code># return the full dataset
+curl http://localhost:5000/api/summary
+
+# return only one title
+curl "http://localhost:5000/api/summary?title=10"</code></pre>
+    This endpoint returns JSON representing the list of chapters, and it is what the React front‑end uses to populate its table.</li>
+  <li><strong>Serve the front‑end.</strong> The front‑end is a static HTML file. You can open it directly or run a simple server. For example:
+    <pre><code>cd ecfr_analyzer/frontend
+python -m http.server 8080
+</code></pre>
+    It is important to start the static server from the directory that contains <code>index.html</code>; otherwise the file won’t be found.  The commands above change into the <code>frontend</code> directory and serve its contents on port 8080.  Then browse to <code>http://localhost:8080/index.html</code>.  The updated page uses an absolute URL to fetch the data from <code>http://localhost:5000/api/summary</code>, so it will work even though the HTML and API are on different ports.</li>
+</ol>
+<p>Following these steps allows you to run the complete system and, if desired, interact with the API from scripts using the <code>curl</code> commands shown above.</p>
+
+<h2>How Everything Fits Together</h2>
+<p>When you call <code>/api/update</code> on the Flask server, it downloads each title’s structure and parts from the eCFR API, computes the metrics, logs its progress to <code>process.log</code> and any errors to <code>error.log</code>, and stores the results in <code>data.json</code>. When you open <code>index.html</code> (ideally via a small static server), React fetches the dataset from <code>/api/summary</code>, builds a table, and displays it. The unpkg CDN supplies the React libraries needed by the page【772025400715672†L2-L7】, and the CDN concept explains why this works efficiently【468032774274077†L175-L179】.</p>
+<p>The server now writes its progress after every title, so you can interrupt an update at any time without losing work. When restarted, it reads <code>data.json</code> and skips titles that are already present. A <code>title</code> query parameter on <code>/api/update</code> or <code>/api/summary</code> lets you download or view just one title instead of the entire CFR.</p>
+
+<h2>Understanding <code>index.html</code> and the Page Load Process</h2>
+<p>The front‑end is written in standard web technologies: <strong>HTML</strong> for structure, <strong>CSS</strong> for styling and <strong>JavaScript</strong> for behaviour. When you navigate to <code>http://localhost:8080/index.html</code> in your browser, several things happen:</p>
+<ol>
+  <li>The browser sends an HTTP GET request to the static server started with <code>python -m http.server</code>. Because you ran that command in the <code>frontend</code> directory, the server finds <code>index.html</code> and returns its contents.</li>
+  <li>The browser starts parsing the HTML. It applies the inline <code>&lt;style&gt;</code> rules to set fonts and table styling.</li>
+  <li>When the parser encounters the two <code>&lt;script src="https://unpkg.com/..."&gt;</code> tags, it pauses parsing and requests those JavaScript files from the unpkg CDN. This is the moment when the CDN is contacted. The CDN delivers minified versions of React and ReactDOM, which are cached by your browser for subsequent visits.【772025400715672†L2-L7】</li>
+  <li>After React and ReactDOM load, the browser continues to the inline script. This script defines a React component called <code>MetricsTable</code>. Using React’s hooks, it initially renders a “Loading…” message and then, once the component mounts, calls <code>fetch('http://localhost:5000/api/summary')</code> to request the dataset from the Flask backend.</li>
+  <li>The call to <code>fetch</code> sends an HTTP GET to the backend running on port 5000. Because CORS is enabled, the browser accepts the response even though it’s from a different origin. When the JSON returns, the component updates its state and React re‑renders the table rows.</li>
+</ol>
+<p>In short, the HTML file itself does not contain any data. It pulls React from a CDN, executes JavaScript to fetch the metrics from your backend, and then renders them dynamically. If either the CDN is unreachable, the backend is not running, or the file is opened without a web server (e.g., via <code>file://</code>), the table will remain empty.</p>
+
+<h2>Explaining the Table Columns</h2>
+<p>Once the data is fetched, the React component renders a table where each row corresponds to a single chapter (treated as an agency) within a title. The columns have the following meaning:</p>
+<ul>
+  <li><strong>Agency</strong> – the name of the chapter, typically describing the agency or sub‑agency responsible for that portion of the CFR. It comes from the <code>heading</code> field of the eCFR structure API.</li>
+  <li><strong>Title</strong> – a combination of the CFR title number and its full name (for example, “10 – Energy”). Titles group related regulations; there are 50 titles in the CFR.</li>
+  <li><strong>Chapter</strong> – the chapter identifier (usually a Roman numeral or letter) within the title. Chapters further subdivide the title.</li>
+  <li><strong>Word Count</strong> – the total number of individual words across all parts within the chapter. The backend computes this by fetching each part’s text, stripping out XML tags, splitting on word boundaries and summing the lengths.</li>
+  <li><strong>Checksum</strong> – an MD5 hash of the concatenated text from all parts in the chapter. This acts as a fingerprint: if the regulatory text changes, the checksum will change too.</li>
+  <li><strong>Versions</strong> – the count of historical versions available for the title. The eCFR API exposes a <code>/versions</code> endpoint listing snapshots; the length of that list is used as a proxy for how often the title has been updated over time.</li>
+  <li><strong>Shall Ratio</strong> – the frequency of the word “shall” relative to the total word count in the chapter. The backend counts how many times the case‑insensitive word “shall” appears and divides by the total number of words. This gives a small number (e.g. <code>0.012345</code>) indicating how directive the language might be.</li>
+</ul>
+
+</body>
+</html>
